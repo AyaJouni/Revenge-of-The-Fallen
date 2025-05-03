@@ -1,0 +1,7 @@
+{
+  "direction_preferences": {},
+  "target_approach_patterns": {},
+  "deadlock_escape_patterns": {},
+  "training_iterations": 1,
+  "is_trained": true
+}
