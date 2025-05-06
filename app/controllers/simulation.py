@@ -1,6 +1,5 @@
 #last time done
 import time
-import math
 import heapq
 import random
 from app.models.grid import Grid
@@ -93,13 +92,18 @@ class ProgrammableMatterSimulation:
         self.controller.set_target_positions(valid_targets)
         return valid_targets
 
-    def find_path(self, start_x, start_y, goal_x, goal_y, algorithm="astar", topology="vonNeumann"):
+    def find_path(self, start_x, start_y, goal_x, goal_y, algorithm="astar", topology="vonNeumann", controller=None, element_id=None):
         """Find a path using the specified algorithm."""
         try:
             # Only check if goal is occupied by another element when it's not the element's current position
             if (start_x != goal_x or start_y != goal_y) and self.grid.is_element(goal_x, goal_y):
                 print(f"Goal position ({goal_x}, {goal_y}) is blocked by another agent")
                 return None, 0
+            
+            # For minimax, we need controller and element_id
+            if algorithm == "minimax" and controller is not None and element_id is not None:
+                from app.algorithms.minimax import minimax_pathfind
+                return minimax_pathfind(self.grid, start_x, start_y, goal_x, goal_y, controller, element_id, topology)
             
             # Choose the appropriate algorithm
             if algorithm == "astar":
@@ -117,7 +121,7 @@ class ProgrammableMatterSimulation:
             traceback.print_exc()
             return None, 0
    
-    def transform(self, algorithm="astar", topology="vonNeumann", movement="sequential", control_mode="centralized",shape_type="square"):
+    def transform(self, algorithm="astar", topology="vonNeumann", movement="sequential", control_mode="centralized"):
         """Transform the elements to the target shape."""
         start_time = time.time()
         
@@ -133,7 +137,7 @@ class ProgrammableMatterSimulation:
         if control_mode == "centralized":
             result = self._transform_centralized(algorithm, topology, movement, paths, total_moves, total_nodes_explored)
         else:
-            result = self._transform_independent(algorithm, topology, movement, total_moves, total_nodes_explored,shape_type)
+            result = self._transform_independent(algorithm, topology, movement, total_moves, total_nodes_explored)
         
         # Check if result is None (error occurred in the transformation)
         if result is None:
@@ -171,7 +175,6 @@ class ProgrammableMatterSimulation:
         for element in sorted_elements:
             if not element.has_target():
                 continue
-
             
             # Temporarily remove the element from the grid for pathfinding
             self.grid.remove_element(element)
@@ -458,167 +461,514 @@ class ProgrammableMatterSimulation:
         
         # If we get here, we couldn't clear the path
         return False
-    
-    
-    def get_shape_center(self):
-            tx = [e.target_x for e in self.controller.elements.values() if e.has_target()]
-            ty = [e.target_y for e in self.controller.elements.values() if e.has_target()]
-            return (sum(tx) / len(tx), sum(ty) / len(ty)) if tx and ty else (0, 0)
-
-
   
     # This code focuses on improving topology handling in the independent control mode
-    def _transform_independent(self, algorithm, topology, movement, total_moves, total_nodes_explored,shape_type):
-        print("\nIndependent control mode")
 
-        max_steps = 500
+    def _transform_independent(self, algorithm, topology, movement, total_moves, total_nodes_explored):
+        """
+        Enhanced independent control transformation implementation.
+        Each element makes movement decisions based on local information.
+        Handles both von Neumann and Moore topologies without special agent priority.
+        """
+        import random
+        print(f"\nIndependent control mode with {topology} topology")
+        
+        # Initialize tracking variables
+        max_steps = 500  # Maximum number of simulation steps
         current_step = 0
+        
+        # For tracking elements that have reached their targets
         reached_targets = set()
-        stuck_counter = {}
-        position_history = {}
+        
+        # For tracking stuck elements (enhanced deadlock detection)
+        stuck_counter = {}  # element_id -> steps stuck
+        position_history = {}  # element_id -> list of recent positions
+        
+        # Track blocked elements (elements that couldn't reach their targets due to other elements)
         blocked_elements = set()
+        
+        # Global deadlock detection
         global_no_movement_counter = 0
+        max_no_movement_threshold = 15  # Maximum consecutive rounds without movement before declaring global deadlock
         
-        def detect_loop(history):
-            if len(history) >= 6:
-                for k in range(2, 4):
-                    if len(history) >= 2 * k and history[-k:] == history[-2 * k:-k]:
-                        return True
-            return False
+        # Adjust thresholds based on topology
+        if topology == "vonNeumann":
+            # For von Neumann (4-connectivity), deadlocks are more likely due to fewer movement options
+            deadlock_threshold = 4  # More aggressive detection for von Neumann
+            # Adjust movement bias to consider direction more than distance
+            direction_weight = 3.0  # Higher weight for direction alignment in von Neumann 
+            distance_weight = 2.5   # Lower weight for distance improvement
+        else:  # Moore topology
+            deadlock_threshold = 5  # Default threshold for Moore (8-connectivity)
+            # Normal weights for Moore topology
+            direction_weight = 2.0
+            distance_weight = 4.0
         
-        
-        e10 = self.controller.elements.get(10)
-        if e10 and (e10.x != e10.target_x or e10.y != e10.target_y):
-            blocked_elements.add(10)
-
-        def resolve_shape_deadlock():
-            if shape_type == "circle":
-                return self.resolve_circle_deadlock(total_moves)
-            elif shape_type == "triangle":
-                return self.resolve_triangle_deadlock(blocked_elements, total_moves)
-            elif shape_type == "square":
-                return self.resolve_square_deadlock(blocked_elements, total_moves)
-            return False
-
+        # Simulate distributed movement until all elements reach targets or max steps reached
         while current_step < max_steps:
             print(f"\nStep {current_step + 1}")
-
+            
+            # Check if all elements have reached their targets
             all_elements = [e for e in self.controller.elements.values() if e.has_target()]
             elements_at_target = [e for e in all_elements if e.x == e.target_x and e.y == e.target_y]
-
-            print(f"Progress: {len(elements_at_target)}/{len(all_elements)} elements at target")
-
+            
+            # Report progress
+            at_target_percentage = 100 * len(elements_at_target) / len(all_elements) if all_elements else 0
+            print(f"Progress: {len(elements_at_target)}/{len(all_elements)} elements at target ({at_target_percentage:.1f}%)")
+            
             if len(elements_at_target) == len(all_elements):
                 print("All elements have reached their targets!")
                 break
-
+            
+            # Track elements' decisions this round
             moves_this_round = []
-
+            
+            # SPECIAL TARGET SWAPPING FOR STUCK ELEMENTS
+            # If we've been running for a while and still have stuck elements, try target swapping
+            if current_step > 100 and blocked_elements:
+                # Only do this occasionally (more frequently for von Neumann topology)
+                swap_frequency = 15 if topology == "vonNeumann" else 20
+                if current_step % swap_frequency == 0:
+                    print("Attempting target reassignment for blocked elements...")
+                    target_swapped = self._swap_targets_for_blocked_elements(blocked_elements)
+                    if target_swapped:
+                        print("Successfully swapped targets to resolve deadlock")
+                        # Reset stuck counters for all elements
+                        stuck_counter = {}
+                        # Reset position history
+                        position_history = {}
+                        # Clear blocked elements set
+                        blocked_elements = set()
+            
+            # Each element makes a decision independently
             for element_id, element in self.controller.elements.items():
+                # Skip elements without targets or already at their targets
                 if not element.has_target() or element_id in reached_targets:
                     continue
-
+                
+                # Check if element has reached its target
                 if element.x == element.target_x and element.y == element.target_y:
+                    print(f"Element {element_id} has reached its target at ({element.x}, {element.y})")
                     reached_targets.add(element_id)
-                    blocked_elements.discard(element_id)
-                    stuck_counter.pop(element_id, None)
-                    position_history.pop(element_id, None)
+                    if element_id in blocked_elements:
+                        blocked_elements.remove(element_id)
+                    if element_id in stuck_counter:
+                        del stuck_counter[element_id]
+                    if element_id in position_history:
+                        del position_history[element_id]
                     continue
-
+                
+                # Initialize or update position history for deadlock detection
                 current_pos = (element.x, element.y)
-                history = position_history.setdefault(element_id, [])
-                if not history or history[-1] != current_pos:
-                    history.append(current_pos)
-                    stuck_counter[element_id] = 0
+                if element_id not in position_history:
+                    position_history[element_id] = [current_pos]
                 else:
-                    stuck_counter[element_id] = stuck_counter.get(element_id, 0) + 1
-                if len(history) > 10:
-                    history[:] = history[-10:]
-
-                is_deadlocked = detect_loop(history)
-
-                if stuck_counter[element_id] > 10:
-                    blocked_elements.add(element_id)
-
-                effective_topology = "moore" if element.id == 10  else topology
-                neighbors = self.grid.get_neighbors(element.x, element.y, effective_topology)
-                valid_neighbors = [(nx, ny) for nx, ny in neighbors
+                    # Only add if position has changed
+                    if position_history[element_id][-1] != current_pos:
+                        position_history[element_id].append(current_pos)
+                        # Reset stuck counter if the element moved
+                        stuck_counter[element_id] = 0
+                    else:
+                        # Increment stuck counter if element hasn't moved
+                        stuck_counter[element_id] = stuck_counter.get(element_id, 0) + 1
+                    
+                    # Keep only the last 8 positions for pattern detection
+                    if len(position_history[element_id]) > 8:
+                        position_history[element_id] = position_history[element_id][-8:]
+                
+                # Enhanced deadlock detection - check for both oscillation and circular patterns
+                is_deadlocked = False
+                pattern_length = 0
+                
+                if len(position_history[element_id]) >= 4:
+                    positions = position_history[element_id]
+                    
+                    # Check for oscillation (A-B-A-B pattern)
+                    if len(set(positions[-4:])) <= 2 and positions[-4] == positions[-2] and positions[-3] == positions[-1]:
+                        is_deadlocked = True
+                        pattern_length = 2
+                        print(f"Element {element_id} is oscillating between positions")
+                    
+                    # Check for longer cycles (up to 4-position cycle)
+                    if len(positions) >= 8:
+                        if positions[-4:] == positions[-8:-4]:
+                            is_deadlocked = True
+                            pattern_length = 4
+                            print(f"Element {element_id} is in a 4-position cycle")
+                            
+                    # For von Neumann, also check if element is trapped going back and forth in same row/column
+                    if topology == "vonNeumann" and len(set(positions[-3:])) <= 2 and not is_deadlocked:
+                        # Check if all recent positions share same x or same y (stuck in a line)
+                        all_same_x = all(pos[0] == positions[-1][0] for pos in positions[-3:])
+                        all_same_y = all(pos[1] == positions[-1][1] for pos in positions[-3:])
+                        if all_same_x or all_same_y:
+                            is_deadlocked = True
+                            pattern_length = 2
+                            print(f"Element {element_id} is trapped in a line (von Neumann topology limitation)")
+                
+                # Add to blocked elements list if stuck for too long
+                stuck_threshold = 8 if topology == "vonNeumann" else 10  # Lower threshold for von Neumann
+                if stuck_counter.get(element_id, 0) > stuck_threshold:
+                    if element_id not in blocked_elements:
+                        blocked_elements.add(element_id)
+                        print(f"Element {element_id} is considered blocked (stuck for {stuck_threshold}+ steps)")
+                
+                # Get all neighboring cells based on topology
+                neighbors = self.grid.get_neighbors(element.x, element.y, topology)
+                
+                # Filter neighbors that are not walls or occupied by other elements
+                valid_neighbors = [(nx, ny) for nx, ny in neighbors 
                                 if not self.grid.is_wall(nx, ny) and not self.grid.is_element(nx, ny)]
-
+                
                 if not valid_neighbors:
+                    print(f"Element {element_id} has no valid moves available (surrounded)")
                     continue
-
-                next_pos = None
-                if is_deadlocked or stuck_counter[element_id] >= 5:
-                    escape = [pos for pos in valid_neighbors if pos not in history[-4:]]
-                    next_pos = random.choice(escape) if escape else random.choice(valid_neighbors)
+                
+                # STRATEGY 1: If element is deadlocked or severely stuck, use random movement to break out
+                if is_deadlocked or stuck_counter.get(element_id, 0) >= deadlock_threshold:
+                    print(f"Element {element_id} is deadlocked or stuck. Using randomized movement.")
+                    
+                    # Try to find a neighbor that isn't in the recent movement pattern
+                    recent_positions = set(position_history[element_id][-pattern_length*2:] if pattern_length > 0 else [])
+                    escape_neighbors = [pos for pos in valid_neighbors if pos not in recent_positions]
+                    
+                    if escape_neighbors:
+                        # For von Neumann, prioritize neighbors that align with target direction when breaking deadlocks
+                        if topology == "vonNeumann":
+                            # Calculate direction to target
+                            dx = element.target_x - element.x
+                            dy = element.target_y - element.y
+                            
+                            # Give higher weight to moves that align with target direction
+                            escape_neighbors.sort(key=lambda pos: (
+                                (pos[0] - element.x) * dx + (pos[1] - element.y) * dy,  # Direction alignment
+                                random.random()  # Random tiebreaker
+                            ), reverse=True)
+                            
+                            # Choose the best aligned escape, but with randomness
+                            if random.random() < 0.7:  # 70% chance to take the best aligned escape
+                                next_pos = escape_neighbors[0]
+                            else:  # 30% chance to take any random escape
+                                next_pos = random.choice(escape_neighbors)
+                        else:
+                            # For Moore, just choose randomly
+                            next_pos = random.choice(escape_neighbors)
+                        print(f"Attempting to break pattern by moving to {next_pos}")
+                    else:
+                        # If all neighbors are in the pattern, choose any valid move
+                        next_pos = random.choice(valid_neighbors)
+                
+                # STRATEGY 2: For normal movement, try pathfinding
                 else:
-
-                    self.grid.remove_element(element)
-                    path_result = self.find_path(element.x, element.y, element.target_x, element.target_y, algorithm, topology)
-                    self.grid.add_element(element)
-
+                    # For minimax algorithm, we need to pass controller and element_id
+                    if algorithm == "minimax":
+                        path_result = self.find_path(
+                            element.x, element.y,
+                            element.target_x, element.target_y,
+                            algorithm, topology,
+                            controller=self.controller,
+                            element_id=element.id
+                        )
+                    else:
+                        # For other algorithms, temporarily remove the element
+                        self.grid.remove_element(element)
+                        
+                        # Try to find a path
+                        path_result = self.find_path(
+                            element.x, element.y,
+                            element.target_x, element.target_y,
+                            algorithm, topology
+                        )
+                        
+                        # Put the element back
+                        self.grid.add_element(element)
+                    
                     if path_result and path_result[0] and len(path_result[0]) > 1:
+                        # A path was found, take the next step
                         next_pos = path_result[0][1]
                         total_nodes_explored += path_result[1]
+                    else:
+                        # No path found, use improved heuristic movement
                         
-
+                        # Prioritize neighbors by a combination of:
+                        # 1. Distance improvement (how much closer to target)
+                        # 2. Direction alignment with target
+                        # 3. Future mobility (avoid getting trapped)
+                        
+                        neighbor_scores = []
+                        current_distance = element.distance_to_target()
+                        
+                        # Use topology-specific weights for all elements equally
+                        local_direction_weight = direction_weight
+                        local_distance_weight = distance_weight
+                        
+                        for nx, ny in valid_neighbors:
+                            # Check if this is a diagonal move (only relevant for Moore topology)
+                            is_diagonal = topology == "moore" and abs(nx - element.x) == 1 and abs(ny - element.y) == 1
+                            
+                            # Calculate distance improvement
+                            new_distance = abs(nx - element.target_x) + abs(ny - element.target_y)
+                            distance_improvement = current_distance - new_distance
+                            
+                            # Calculate direction alignment
+                            dx = element.target_x - element.x
+                            dy = element.target_y - element.y
+                            move_dx = nx - element.x
+                            move_dy = ny - element.y
+                            
+                            # Simple direction alignment (dot product)
+                            direction_alignment = (dx * move_dx + dy * move_dy)
+                            
+                            # For von Neumann, give bonus to moves that make progress in largest dimension
+                            if topology == "vonNeumann":
+                                # If dx is larger, prioritize horizontal movement; if dy is larger, prioritize vertical
+                                if abs(dx) > abs(dy) and move_dx != 0:
+                                    direction_alignment += 0.5  # Bonus for moving in the dominant direction
+                                elif abs(dy) > abs(dx) and move_dy != 0:
+                                    direction_alignment += 0.5
+                            
+                            # Mobility - count future free neighbors
+                            future_neighbors = self.grid.get_neighbors(nx, ny, topology)
+                            free_future_neighbors = sum(1 for fx, fy in future_neighbors
+                                                    if not self.grid.is_wall(fx, fy) and not self.grid.is_element(fx, fy))
+                            
+                            # Avoid revisiting recent positions (anti-oscillation)
+                            recent_penalty = -5 if (nx, ny) in position_history.get(element_id, [])[-3:] else 0
+                            
+                            # Add a slight penalty for diagonal moves to reduce congestion (Moore only)
+                            diagonal_penalty = -0.5 if is_diagonal else 0
+                            
+                            # Combined score with weights - no special boost for specific agents
+                            score = (distance_improvement * local_distance_weight) + (direction_alignment * local_direction_weight) + (free_future_neighbors * 0.5) + recent_penalty + diagonal_penalty
+                            
+                            neighbor_scores.append((nx, ny, score))
+                        
+                        # Sort by score and choose the best
+                        if neighbor_scores:
+                            neighbor_scores.sort(key=lambda x: x[2], reverse=True)
+                            best_score = neighbor_scores[0][2]
+                            
+                            # Only move if score is positive or we're stuck
+                            stuck = stuck_counter.get(element_id, 0) >= 3
+                            if best_score > 0 or stuck:
+                                next_pos = (neighbor_scores[0][0], neighbor_scores[0][1])
+                
+                # If a valid next position was found, plan to move there
                 if next_pos:
                     moves_this_round.append((element, next_pos))
-
-            # Execute moves
-            if movement == "parallel" and current_step % 5 == 0:
-                self.resolve_triangle_deadlock(blocked_elements, total_moves)
- 
-            executed = 0
-            for element, (nx, ny) in moves_this_round:
-                old = (element.x, element.y)
-                success = self.grid.move_element(element, nx, ny)
-                if success:
-                    total_moves.append({"agentId": element.id, "from": old, "to": (nx, ny)})
-                    blocked_elements.discard(element.id)
-                    executed += 1
-                    print(f"Moved Element {element.id} from {old} to {(nx, ny)}")
                 else:
-                    stuck_counter[element.id] = stuck_counter.get(element.id, 0) + 1
-                    print(f"Failed to move Element {element.id} to {(nx, ny)}")
-                total_nodes_explored += 1
-
-            if executed > 0:
-                if current_step % 5 == 0:
-                    if not resolve_shape_deadlock():
-                        print("No shape-specific deadlock resolved.")    
-
-            if executed == 0:
-                global_no_movement_counter += 1
-            else:
-                global_no_movement_counter = 0
-
-            if global_no_movement_counter >= 20:
-                print("Global stagnation detected. Ending early.")
-                break
+                    print(f"Element {element_id} couldn't find a valid move")
+                    # If no move was found, increment stuck counter
+                    stuck_counter[element_id] = stuck_counter.get(element_id, 0) + 1
                     
-            if len(total_moves) >= 200:
-                self.resolve_circle_deadlock(total_moves)       
-            current_step += 1
+            # ENHANCED CONFLICT RESOLUTION FOR PARALLEL MOVEMENT
+            if movement == "parallel" and moves_this_round:
+                # Track positions that will be occupied
+                planned_positions = {}
+                final_moves = []
+                
+                # Identify elements that may be blocking others
+                blocking_elements = set()
+                for element_id, element in self.controller.elements.items():
+                    if not element.has_target() or element_id in reached_targets:
+                        continue
+                        
+                    # Check if this element is blocking any other element's path to target
+                    for other_id, other in self.controller.elements.items():
+                        if other_id != element_id and other.has_target() and other_id not in reached_targets:
+                            # Simple blocking check based on topology
+                            if topology == "vonNeumann":
+                                # For von Neumann, only check cardinal directions
+                                if ((element.x == other.target_x and 
+                                    min(other.y, other.target_y) <= element.y <= max(other.y, other.target_y)) or
+                                    (element.y == other.target_y and 
+                                    min(other.x, other.target_x) <= element.x <= max(other.x, other.target_x))):
+                                    blocking_elements.add(element_id)
+                                    break
+                            else:  # Moore topology
+                                # For Moore, check full bounding box
+                                if ((min(other.x, other.target_x) <= element.x <= max(other.x, other.target_x)) and
+                                    (min(other.y, other.target_y) <= element.y <= max(other.y, other.target_y))):
+                                    blocking_elements.add(element_id)
+                                    break
+                
+                # Enhanced priority sorting - no special treatment for specific elements
+                moves_this_round.sort(key=lambda m: (
+                    # Priority 0: Handle topology-specific preferences
+                    0 if (topology == "vonNeumann" and 
+                        # Extra priority for elements that can only move in 1-2 directions
+                        sum(1 for nx, ny in self.grid.get_neighbors(m[0].x, m[0].y, topology) 
+                            if not self.grid.is_wall(nx, ny) and not self.grid.is_element(nx, ny)) <= 2) else 1,
+                    
+                    # Priority 1: Negative wait time (higher wait time = higher priority)
+                    -stuck_counter.get(m[0].id, 0) * 2,
+                    
+                    # Priority 2: Distance to target (lower is better)
+                    m[0].distance_to_target(),
+                    
+                    # Priority 3: Deadlocked elements get priority
+                    0 if m[0].id in blocked_elements else 1,
+                    
+                    # Priority 4: Elements blocking others get priority
+                    0 if m[0].id in blocking_elements else 1
+                ))
+                
+                # Allocate moves, giving priority based on the sort order
+                for element, pos in moves_this_round:
+                    if pos not in planned_positions:
+                        planned_positions[pos] = element
+                        final_moves.append((element, pos))
+                    else:
+                        # Log conflict
+                        print(f"Movement conflict: Element {element.id} and Element {planned_positions[pos].id} both want position {pos}")
+                
+                # Replace with conflict-resolved moves
+                moves_this_round = final_moves
+                
+            # Check for global deadlock - no movement in this round
+            if not moves_this_round:
+                global_no_movement_counter += 1
+                print(f"No movement detected in step {current_step + 1}. Global no-movement counter: {global_no_movement_counter}")
+                
+                # If no movement for several consecutive rounds, we have a global deadlock
+                if global_no_movement_counter >= max_no_movement_threshold:
+                    print(f"GLOBAL DEADLOCK DETECTED after {global_no_movement_counter} consecutive rounds without movement")
+                    print("Attempting emergency deadlock resolution...")
+                    
+                    # Emergency deadlock resolution: temporarily remove some elements from the board
+                    # to give others a chance to move
+                    if len(blocked_elements) > 0:
+                        # Focus on resolving blocked elements first
+                        emergency_resolved = self._emergency_deadlock_resolution(blocked_elements, total_moves, topology)
+                        if emergency_resolved:
+                            print("Emergency deadlock resolution applied")
+                            global_no_movement_counter = 0  # Reset counter after intervention
+                    else:
+                        print("No specific blocked elements identified, cannot resolve global deadlock")
+                        # Add all remaining unfinished elements to blocked list
+                        for eid, element in self.controller.elements.items():
+                            if eid not in reached_targets and element.has_target():
+                                blocked_elements.add(eid)
+                        
+                        # Try target reassignment as a last resort
+                        if current_step > 150:
+                            print("Trying emergency target reassignment...")
+                            self.controller.assign_targets()  # Completely reassign targets
+                            # Reset all counters and histories
+                            stuck_counter = {}
+                            position_history = {}
+                            blocked_elements = set()
+                            global_no_movement_counter = 0
+                        
+                        # If deadlock persists too long, break out
+                        if global_no_movement_counter >= max_no_movement_threshold * 2:
+                            print(f"Terminating simulation due to persistent global deadlock")
+                            break
+            else:
+                # Reset global deadlock counter when there's movement
+                if global_no_movement_counter > 0:
+                    print(f"Movement detected, resetting global no-movement counter from {global_no_movement_counter} to 0")
+                    global_no_movement_counter = 0
+                    
+                    # If we had previously identified blocked elements but now have movement,
+                    # reconsider which elements are truly blocked
+                    if blocked_elements:
+                        # Re-evaluate which elements are still blocked after successful movement
+                        still_blocked = set()
+                        for eid in blocked_elements:
+                            element = self.controller.elements.get(eid)
+                            if element and element.has_target() and stuck_counter.get(eid, 0) > 5:
+                                still_blocked.add(eid)
+                        
+                        # Update blocked elements list
+                        if len(still_blocked) < len(blocked_elements):
+                            print(f"Reduced blocked elements list from {len(blocked_elements)} to {len(still_blocked)}")
+                            blocked_elements = still_blocked
 
-        success_rate = len(elements_at_target) / len(all_elements) if all_elements else 0
+                # Prioritize moves that would place agents directly into their goal
+                moves_this_round.sort(key=lambda pair: (
+                    0 if (pair[1][0], pair[1][1]) == (pair[0].target_x, pair[0].target_y) else 1,
+                    pair[0].distance_to_target()  # tie-breaker: prefer closer agents
+                ))
+                            
+                
+                # Local reservation system to avoid collision
+                reservations = {}  # (x, y) -> element.id
+                valid_moves_this_round = []
+
+                for element, (next_x, next_y) in moves_this_round:
+                    if (next_x, next_y) not in reservations:
+                        reservations[(next_x, next_y)] = element.id
+                        valid_moves_this_round.append((element, (next_x, next_y)))
+                    else:
+                        # Conflict: two agents want to move to the same cell
+                        print(f"Agent {element.id} move to ({next_x}, {next_y}) skipped due to reservation conflict with Agent {reservations[(next_x, next_y)]})")
+
+
+                # Execute the moves for this round
+                executed_move_count = 0
+                for element, (next_x, next_y) in valid_moves_this_round:
+                    # Record the old position
+                    old_pos = (element.x, element.y)
+                    
+                    # Execute the move
+                    success = self.grid.move_element(element, next_x, next_y)
+                    
+                    if success:
+                        # Add to moves list
+                        move = {"agentId": element.id, "from": old_pos, "to": (next_x, next_y)}
+                        total_moves.append(move)
+                        executed_move_count += 1
+                        
+                        print(f"Moved Element {element.id} from ({old_pos[0]}, {old_pos[1]}) to ({next_x}, {next_y})")
+                        
+                        # If this was a blocked element that moved, remove it from blocked list
+                        if element.id in blocked_elements:
+                            blocked_elements.remove(element.id)
+                    else:
+                        print(f"Failed to move Element {element.id} to ({next_x}, {next_y})")
+                    
+                    # Count this as node exploration
+                    total_nodes_explored += 1
+                    
+                # For sequential movement, only process one move per step, but occasionally allow "bursts"
+                if movement == "sequential" and executed_move_count > 0:
+                    if current_step % 5 == 0:  # Allow multi-move "bursts" every 5 steps
+                        # Special handler for Moore topology
+                        if topology == "moore":
+                            deadlock_broken = self.resolve_sequential_moore_deadlock(total_moves)
+                        else:
+                            deadlock_broken = self._break_complex_deadlock(total_moves, blocked_elements)
+                            
+                        if deadlock_broken:
+                            print("Preemptively resolved potential deadlock in sequential mode")
+                            # Reset global_no_movement_counter since we intervened
+                            global_no_movement_counter = 0
+                    else:
+                        current_step += 1
+                        continue  # Skip the rest of the loop and go to the next iteration
+            
+            current_step += 1
+        
+        # Calculate success metrics
+        total_with_targets = sum(1 for e in self.controller.elements.values() if e.has_target())
+        elements_at_target = sum(1 for e in self.controller.elements.values() 
+                            if e.has_target() and e.x == e.target_x and e.y == e.target_y)
+        success_rate = elements_at_target / total_with_targets if total_with_targets > 0 else 0
+        
         print(f"\nIndependent transformation complete.")
-        print(f"Elements at target: {len(elements_at_target)}/{len(all_elements)} ({success_rate*100:.1f}%)")
+        print(f"Elements at target: {elements_at_target}/{total_with_targets} ({success_rate*100:.1f}%)")
         print(f"Steps taken: {current_step}")
         print(f"Total moves: {len(total_moves)}")
-
+        
         return {
-            "paths": {},
+            "paths": {},  # Independent mode doesn't pre-compute full paths
             "moves": total_moves,
             "nodes_explored": total_nodes_explored,
             "success_rate": success_rate,
-            "success": success_rate > 0.95
+            "success": success_rate > 0.95  # Consider success if 95% of elements reached targets
         }
 
-
-
-    # Add this function to your ProgrammableMatterSimulation class
     def _emergency_deadlock_resolution(self, blocked_elements, total_moves, topology="vonNeumann"):
         """
         Emergency intervention for global deadlocks.
@@ -913,68 +1263,6 @@ class ProgrammableMatterSimulation:
                             break
             
         return interventions_applied > 0
-    def _emergency_deadlock_resolution(self, blocked_elements, total_moves):
-        """
-        Emergency intervention for global deadlocks.
-        Temporarily removes some elements to create movement opportunities.
-        
-        Args:
-            blocked_elements: Set of element IDs that are blocked
-            total_moves: List to record moves for visualization
-            
-        Returns:
-            bool: True if intervention was applied, False otherwise
-        """
-        import random
-        if not blocked_elements:
-            return False
-        
-        # Select a random blocked element to move forcefully
-        element_ids = list(blocked_elements)
-        if not element_ids:
-            return False
-        
-        # Try to move up to 3 blocked elements
-        intervention_count = 0
-        for _ in range(min(3, len(element_ids))):
-            element_id = random.choice(element_ids)
-            element = self.controller.elements.get(element_id)
-            
-            if not element:
-                continue
-                
-            # Find a safe place to move this element temporarily
-            # Look for empty cells in increasing radius from target
-            target_x, target_y = element.target_x, element.target_y
-            intervention_applied = False
-            
-            for radius in range(1, 5):  # Try up to 4 cells away
-                # Generate positions in a "diamond" around the target
-                for dx, dy in [(0, radius), (radius, 0), (0, -radius), (-radius, 0)]:
-                    check_x, check_y = target_x + dx, target_y + dy
-                    
-                    # Check if valid and empty
-                    if (self.grid.is_valid_position(check_x, check_y) and 
-                        not self.grid.is_wall(check_x, check_y) and
-                        not self.grid.is_element(check_x, check_y)):
-                        
-                        # Force move the element to this position
-                        old_pos = (element.x, element.y)
-                        success = self.grid.move_element(element, check_x, check_y)
-                        
-                        if success:
-                            move = {"agentId": element.id, "from": old_pos, "to": (check_x, check_y)}
-                            total_moves.append(move)
-                            print(f"EMERGENCY: Moved blocked element {element.id} from {old_pos} to ({check_x}, {check_y})")
-                            intervention_applied = True
-                            intervention_count += 1
-                            break
-                
-                if intervention_applied:
-                    break
-        
-        return intervention_count > 0
-    # Add this function to your ProgrammableMatterSimulation class
 
     def _detect_movement_cycles(self, active_elements):
         """
@@ -1410,109 +1698,6 @@ class ProgrammableMatterSimulation:
             self.grid.add_element(blocked_element)
         
         return blocking_pairs
-    
-    def resolve_circle_deadlock(self, total_moves):
-        print("Attempting circle-specific deadlock resolution")
-        resolved = False
-
-        e11 = self.controller.elements.get(11)
-        max_allowed_moves = 200
-
-        if len(total_moves) >= max_allowed_moves and e11 and (e11.x != e11.target_x or e11.y != e11.target_y):
-            # Try full A* using Moore to get a real path
-            self.grid.remove_element(e11)
-            result = self.find_path(e11.x, e11.y, e11.target_x, e11.target_y, algorithm="astar", topology="moore")
-            self.grid.add_element(e11)
-
-            if result and result[0] and len(result[0]) > 1:
-                # Move to next step in actual path
-                next_pos = result[0][1]
-                old_pos = (e11.x, e11.y)
-                if self.grid.move_element(e11, *next_pos):
-                    print(f"AFTER LIMIT: Element 11 moved via A* from {old_pos} to {next_pos}")
-                    total_moves.append({"agentId": 11, "from": old_pos, "to": next_pos})
-                    resolved = True
-            else:
-                # Fall back to Moore+Manhattan greedy move
-                neighbors = self.grid.get_neighbors(e11.x, e11.y, topology="moore")
-                valid_neighbors = [
-                    (nx, ny) for nx, ny in neighbors
-                    if self.grid.is_valid_position(nx, ny)
-                    and not self.grid.is_wall(nx, ny)
-                    and not self.grid.is_element(nx, ny)
-                ]
-                if valid_neighbors:
-                    next_pos = min(valid_neighbors, key=lambda pos: abs(pos[0] - e11.target_x) + abs(pos[1] - e11.target_y))
-                    old_pos = (e11.x, e11.y)
-                    if self.grid.move_element(e11, *next_pos):
-                        print(f"AFTER LIMIT: Element 11 moved from {old_pos} to {next_pos} using greedy Manhattan")
-                        total_moves.append({"agentId": 11, "from": old_pos, "to": next_pos})
-                        resolved = True
-                else:
-                    print("AFTER LIMIT: No valid Moore neighbors for Element 11")
-
-        return resolved
-
-
-    def resolve_triangle_deadlock(self, blocked_elements, total_moves):
-        print("Attempting triangle-specific deadlock resolution")
-        resolved = False
-
-        element = self.controller.elements.get(10)
-        if not element:
-            return False
-
-        print(">>> Resolving deadlock for Element 10 using Moore neighborhood")
-        neighbors = self.grid.get_neighbors(element.x, element.y, topology="moore")
-
-        valid_neighbors = [
-            (nx, ny) for nx, ny in neighbors
-            if self.grid.is_valid_position(nx, ny)
-            and not self.grid.is_wall(nx, ny)
-            and not self.grid.is_element(nx, ny)
-        ]
-
-        if valid_neighbors:
-            valid_neighbors.sort(key=lambda pos: abs(pos[0] - element.target_x) + abs(pos[1] - element.target_y))
-            for nx, ny in valid_neighbors:
-                old_pos = (element.x, element.y)
-                if self.grid.move_element(element, nx, ny):
-                    print(f"Moved Element 10 from {old_pos} to ({nx}, {ny}) using Moore move")
-                    total_moves.append({"agentId": 10, "from": old_pos, "to": (nx, ny)})
-                    blocked_elements.discard(10)
-                    resolved = True
-                    break
-
-        return resolved
-        
-
-
-    def resolve_square_deadlock(self, blocked_elements, total_moves):
-        print("[Square Deadlock] Resolving...")
-        resolved = False
-        cx, cy = self.get_shape_center()
-
-        for blocked_id in blocked_elements:
-            blocked = self.controller.elements.get(blocked_id)
-            if not blocked:
-                continue
-
-            dx = blocked.target_x - cx
-            dy = blocked.target_y - cy
-            offsets = [(0, 1), (0, -1)] if abs(dx) > abs(dy) else [(1, 0), (-1, 0)]
-
-            for dx, dy in offsets:
-                nx, ny = blocked.x + dx, blocked.y + dy
-                if self.grid.in_bounds(nx, ny) and not self.grid.is_wall(nx, ny) and not self.grid.is_element(nx, ny):
-                    old = (blocked.x, blocked.y)
-                    if self.grid.move_element(blocked, nx, ny):
-                        print(f"Moved Element {blocked.id} to ({nx}, {ny}) to resolve square deadlock")
-                        total_moves.append({"agentId": blocked.id, "from": old, "to": (nx, ny)})
-                        resolved = True
-                        break
-        return resolved
-
-
     
     def _resolve_deadlocks(self, total_moves):
         """Try to resolve deadlocks by finding stuck elements and moving them."""

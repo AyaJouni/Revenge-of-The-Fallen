@@ -164,14 +164,3 @@ class Grid:
                 row += symbols[self.grid[y, x]]
             rows.append(row)
         return "\n".join(rows)
-    
-
-    def get_element_at(self, x, y):
-        """Return the element at the given coordinates, or None if none exists."""
-        for element in self.controller.elements.values():
-            if element.x == x and element.y == y:
-                return element
-        return None
-
-    def in_bounds(self, x, y):
-        return 0 <= x < self.width and 0 <= y < self.height

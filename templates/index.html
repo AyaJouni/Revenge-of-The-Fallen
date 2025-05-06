@@ -62,6 +62,15 @@
                 <span class="faction-name">Decepticons</span>
             </div>
         </div>
+        <!-- Add this right after the faction-selector div -->
+        <div class="tetris-ai-container">
+            <button class="button tetris-ai" id="tetris-ai-button" onclick="launchTetrisAI()">
+                <svg class="button-icon" viewBox="0 0 24 24" width="16" height="16">
+                    <path d="M4 5h16v2H4zM4 11h16v2H4zM4 17h16v2H4z" fill="#ff9900"/>
+                </svg>
+                Launch TetrisAI
+            </button>
+        </div>
 
         <div class="content-container">
             <div class="left-panel">
@@ -150,6 +159,14 @@
                             <div class="radio-option">
                                 <input type="radio" name="algorithm" id="algo-greedy" value="greedy">
                                 <label for="algo-greedy">Greedy</label>
+                            </div>
+                            <div class="radio-option">
+                                <input type="radio" name="algorithm" id="algo-minimax" value="minimax">
+                                <label for="algo-minimax">Minimax</label>
+                            </div>
+                            <div class="radio-option">
+                                <input type="radio" name="algorithm" id="algo-rl" value="rl">
+                                <label for="algo-rl">Reinforcement Learning</label>
                             </div>
                         </div>
                     </div>
@@ -254,6 +271,540 @@
         </div>
     </div>
 
+    <!-- Add this to templates/index.html after the existing main-container div -->
+
+<div class="tetris-game-container" id="tetris-game">
+    <div class="tetris-header">
+        <h2 class="tetris-title">PROGRAMMABLE MATTER TETRIS</h2>
+        <div class="tetris-controls">
+        
+            <button class="button transform" id="btn-start-game" onclick="startTetrisGame()">
+                <svg class="button-icon" viewBox="0 0 24 24" width="16" height="16">
+                    <path d="M8 5v14l11-7z" fill="#00b8ff" />
+                </svg>
+                Start Game
+            </button>
+            <button class="button autobot" id="btn-pause-game" onclick="pauseTetrisGame()">
+                <svg class="button-icon" viewBox="0 0 24 24" width="16" height="16">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" fill="#c41230" />
+                </svg>
+                Pause
+            </button>
+            <button class="button decepticon" id="btn-reset-game" onclick="resetTetrisGame()">
+                <svg class="button-icon" viewBox="0 0 24 24" width="16" height="16">
+                    <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-8 3.58-8 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="#5e17eb" />
+                </svg>
+                Reset
+            </button>
+        </div>
+    </div>
+
+    <div class="tetris-game-layout">
+        <div class="tetris-sidepanel">
+            <div class="next-piece-container">
+                <h3>Next Piece</h3>
+                <div class="next-piece" id="next-piece-preview"></div>
+            </div>
+            
+            <div class="hold-piece-container">
+                <h3>Hold Piece</h3>
+                <div class="hold-piece" id="hold-piece-preview"></div>
+            </div>
+            
+            <div class="tetris-score-container">
+                <div class="tetris-score">
+                    <div class="score-label">Score</div>
+                    <div class="score-value" id="tetris-score">0</div>
+                </div>
+                <div class="tetris-lines">
+                    <div class="score-label">Lines</div>
+                    <div class="score-value" id="tetris-lines">0</div>
+                </div>
+                <div class="tetris-level">
+                    <div class="score-label">Level</div>
+                    <div class="score-value" id="tetris-level">1</div>
+                </div>
+            </div>
+            
+            <div class="ai-controls">
+                <h3>AI Controls</h3>
+                <div class="tetris-toggle">
+                    <span>Learning Mode</span>
+                    <label class="switch">
+                        <input type="checkbox" id="learning-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                <div class="tetris-toggle">
+                    <span>Advanced Planning</span>
+                    <label class="switch">
+                        <input type="checkbox" id="expectimax-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                <div class="planning-depth">
+                    <span>Planning Depth</span>
+                    <div class="depth-controls">
+                        <button class="depth-button" onclick="decreasePlanningDepth()">-</button>
+                        <span id="planning-depth">3</span>
+                        <button class="depth-button" onclick="increasePlanningDepth()">+</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="tetris-board-container">
+            <div class="tetris-board" id="tetris-board">
+                <!-- Tetris board cells will be generated by JavaScript -->
+            </div>
+            
+            <div class="tetris-game-over" id="game-over-screen">
+                <div class="game-over-content">
+                    <h2>Game Over</h2>
+                    <div class="final-score">Score: <span id="final-score">0</span></div>
+                    <button class="button transform" onclick="resetTetrisGame()">Play Again</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="tetris-metrics">
+            <h3>Agent Performance</h3>
+            <div class="metrics-container">
+                <div class="metric-item">
+                    <div class="metric-label">Success Rate</div>
+                    <div class="metric-bar-container">
+                        <div class="metric-bar" id="success-rate-bar" style="width: 0%"></div>
+                        <div class="metric-value" id="success-rate">0%</div>
+                    </div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Elements at Target</div>
+                    <div class="metric-value" id="elements-at-target">0/0</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Tetris Blocks Cleared</div>
+                    <div class="metric-value" id="tetris-blocks">0</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Nodes Explored</div>
+                    <div class="metric-value" id="tetris-nodes">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+
+<!-- Add this to your tetris-game-container div in templates/index.html -->
+
+<!-- Add the AI Controls Section -->
+<div class="ai-controls" style="display: none;">
+    <h3>AI Mode Controls</h3>
+    
+    <div class="tetris-toggle">
+        <span>Learning Mode</span>
+        <label class="switch">
+            <input type="checkbox" id="learning-toggle">
+            <span class="slider round"></span>
+        </label>
+    </div>
+    
+    <div class="algorithm-panel">
+        <h3>Algorithm</h3>
+        <div class="algorithm-options">
+            <!-- Algorithm options will be added by JavaScript -->
+        </div>
+    </div>
+    
+    <div class="planning-depth">
+        <span>Planning Depth</span>
+        <div class="depth-controls">
+            <button class="depth-button" id="decrease-depth">-</button>
+            <span id="planning-depth">2</span>
+            <button class="depth-button" id="increase-depth">+</button>
+        </div>
+    </div>
+</div>
+
+<!-- Add AI Visualization Section -->
+<div class="algorithm-visualization">
+    <div class="visualization-section">
+        <h3>AI Decision Making</h3>
+        <div class="decision-log"></div>
+    </div>
+    
+    <div class="visualization-section">
+        <h3>Evaluated States</h3>
+        <div class="evaluated-states"></div>
+    </div>
+</div>
+
+<!-- Add description for AI mode -->
+<div class="mode-note">
+    <p>
+        In AI mode, the game is played by an intelligent agent using the 
+        <span class="algorithm-name">Minimax</span> algorithm. The AI 
+        evaluates potential moves and chooses the best one based on the 
+        current board state. Programmable matter elements support the 
+        structures built by the AI.
+    </p>
+</div>
+
+<!-- Add this CSS to your styles.css file -->
+<style>
+    .algorithm-option {
+        padding: 5px 10px;
+        background: #222;
+        border: 1px solid #444;
+        border-radius: 3px;
+        color: #ccc;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 0.8rem;
+        margin: 5px;
+        text-align: center;
+    }
+
+    .algorithm-option:hover {
+        background: #333;
+        transform: translateY(-2px);
+        box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    .algorithm-option.active {
+        background: rgba(0, 184, 255, 0.2);
+        border-color: var(--energon-blue);
+        color: var(--energon-blue);
+        box-shadow: 0 0 8px rgba(0, 184, 255, 0.3);
+    }
+
+    .decision-log {
+        max-height: 150px;
+        overflow-y: auto;
+        background: rgba(10, 10, 10, 0.7);
+        padding: 10px;
+        border-radius: 5px;
+        font-family: 'Courier New', monospace;
+        font-size: 0.7rem;
+        color: #0f0;
+        margin-top: 10px;
+    }
+
+    .log-entry {
+        margin-bottom: 5px;
+        line-height: 1.3;
+    }
+
+    .evaluated-states {
+        max-height: 150px;
+        overflow-y: auto;
+        background: rgba(10, 10, 10, 0.7);
+        padding: 10px;
+        border-radius: 5px;
+        margin-top: 10px;
+    }
+
+    .state-item {
+        background: rgba(20, 20, 20, 0.7);
+        padding: 5px 10px;
+        border-radius: 3px;
+        margin-bottom: 5px;
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .state-score {
+        color: var(--energon-blue);
+        font-weight: bold;
+    }
+
+    .state-placement {
+        color: #ccc;
+        font-size: 0.7rem;
+    }
+
+    .mode-note {
+        margin-top: 15px;
+        padding: 10px;
+        background: rgba(0, 184, 255, 0.1);
+        border-left: 3px solid var(--energon-blue);
+        border-radius: 0 4px 4px 0;
+    }
+
+    .mode-note p {
+        font-size: 0.9rem;
+        color: #eee;
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    .algorithm-name {
+        color: var(--energon-blue);
+        font-weight: bold;
+        text-transform: uppercase;
+    }
+</style>
+<!-- Add this section to your tetris-game-container div, after the tetris-metrics div -->
+
+<div class="algorithm-comparison">
+    <h3>Algorithm Comparison</h3>
+    
+    <table class="comparison-table">
+        <thead>
+            <tr>
+                <th>Algorithm</th>
+                <th>Success Rate</th>
+                <th>Nodes Explored</th>
+                <th>Path Length</th>
+                <th>Time (ms)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr id="astar-metrics">
+                <td>A* Search</td>
+                <td id="astar-success">0%</td>
+                <td id="astar-nodes">0</td>
+                <td id="astar-path">0</td>
+                <td id="astar-time">0</td>
+            </tr>
+            <tr id="bfs-metrics">
+                <td>BFS</td>
+                <td id="bfs-success">0%</td>
+                <td id="bfs-nodes">0</td>
+                <td id="bfs-path">0</td>
+                <td id="bfs-time">0</td>
+            </tr>
+            <tr id="greedy-metrics">
+                <td>Greedy</td>
+                <td id="greedy-success">0%</td>
+                <td id="greedy-nodes">0</td>
+                <td id="greedy-path">0</td>
+                <td id="greedy-time">0</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <div class="chart-title">Algorithm Performance</div>
+    <div class="algorithm-chart-container">
+        <div class="chart-axis x"></div>
+        <div class="chart-axis y"></div>
+        
+        <div class="algorithm-chart-bar astar" style="height: 0%;">
+            <div class="algorithm-chart-value">0</div>
+            <div class="algorithm-chart-label">A*</div>
+        </div>
+        
+        <div class="algorithm-chart-bar bfs" style="height: 0%;">
+            <div class="algorithm-chart-value">0</div>
+            <div class="algorithm-chart-label">BFS</div>
+        </div>
+        
+        <div class="algorithm-chart-bar greedy" style="height: 0%;">
+            <div class="algorithm-chart-value">0</div>
+            <div class="algorithm-chart-label">Greedy</div>
+        </div>
+    </div>
+    
+    <button class="experiment-button" id="run-experiment">
+        Run Algorithm Comparison
+    </button>
+</div>
+
+<!-- Add visualization legend -->
+<div class="visualization-legend">
+    <div class="legend-item">
+        <div class="legend-color pm"></div>
+        <div class="legend-label">PM Element</div>
+    </div>
+    <div class="legend-item">
+        <div class="legend-color target"></div>
+        <div class="legend-label">Target Position</div>
+    </div>
+    <div class="legend-item">
+        <div class="legend-color path"></div>
+        <div class="legend-label">Path Node</div>
+    </div>
+    <div class="legend-item">
+        <div class="legend-color explored"></div>
+        <div class="legend-label">Explored Node</div>
+    </div>
+</div>
+
+<!-- Add this function to update the algorithm comparison metrics -->
+<script>
+// Function to update algorithm comparison
+function updateAlgorithmComparison() {
+    // Create comparison metrics object if it doesn't exist
+    if (!tetrisGame.algorithmComparison) {
+        tetrisGame.algorithmComparison = {
+            astar: { success: 0, nodes: 0, path: 0, time: 0 },
+            bfs: { success: 0, nodes: 0, path: 0, time: 0 },
+            greedy: { success: 0, nodes: 0, path: 0, time: 0 }
+        };
+    }
+    
+    // Update the metrics based on current algorithm
+    const algorithm = tetrisGame.algorithmType;
+    const metrics = tetrisGame.metrics;
+    
+    // Calculate success rate
+    const successRate = metrics.elementsWithTargets > 0 ? 
+        (metrics.elementsAtTarget / metrics.elementsWithTargets) * 100 : 0;
+    
+    // Calculate average path length
+    let totalPathLength = 0;
+    let elementCount = 0;
+    
+    tetrisGame.programmableMatter.elements.forEach(element => {
+        if (element.path && element.path.length > 0) {
+            totalPathLength += element.path.length;
+            elementCount++;
+        }
+    });
+    
+    const avgPathLength = elementCount > 0 ? Math.round(totalPathLength / elementCount) : 0;
+    
+    // Store metrics for current algorithm
+    tetrisGame.algorithmComparison[algorithm] = {
+        success: Math.round(successRate),
+        nodes: metrics.nodesExplored,
+        path: avgPathLength,
+        time: performance.now() - tetrisGame.lastAlgorithmSwitch
+    };
+    
+    // Update the table
+    for (const alg of ['astar', 'bfs', 'greedy']) {
+        const data = tetrisGame.algorithmComparison[alg];
+        document.getElementById(`${alg}-success`).textContent = `${data.success}%`;
+        document.getElementById(`${alg}-nodes`).textContent = data.nodes;
+        document.getElementById(`${alg}-path`).textContent = data.path;
+        document.getElementById(`${alg}-time`).textContent = data.time.toFixed(0);
+        
+        // Highlight current algorithm
+        const row = document.getElementById(`${alg}-metrics`);
+        if (alg === algorithm) {
+            row.classList.add('highlight');
+        } else {
+            row.classList.remove('highlight');
+        }
+    }
+    
+    // Update chart
+    updateAlgorithmChart();
+}
+
+// Function to update algorithm chart
+function updateAlgorithmChart() {
+    const comparison = tetrisGame.algorithmComparison;
+    
+    // Find max nodes explored for scaling
+    const maxNodes = Math.max(
+        comparison.astar.nodes,
+        comparison.bfs.nodes,
+        comparison.greedy.nodes
+    );
+    
+    // Update chart bars
+    for (const alg of ['astar', 'bfs', 'greedy']) {
+        const bar = document.querySelector(`.algorithm-chart-bar.${alg}`);
+        const value = document.querySelector(`.algorithm-chart-bar.${alg} .algorithm-chart-value`);
+        
+        // Calculate height percentage
+        const height = maxNodes > 0 ? (comparison[alg].nodes / maxNodes) * 100 : 0;
+        
+        // Update bar
+        bar.style.height = `${height}%`;
+        value.textContent = comparison[alg].nodes;
+    }
+}
+
+// Function to run algorithm comparison experiment
+function runAlgorithmComparison() {
+    const experimentButton = document.getElementById('run-experiment');
+    experimentButton.textContent = 'Running Experiment...';
+    experimentButton.disabled = true;
+    
+    // Reset comparison metrics
+    tetrisGame.algorithmComparison = {
+        astar: { success: 0, nodes: 0, path: 0, time: 0 },
+        bfs: { success: 0, nodes: 0, path: 0, time: 0 },
+        greedy: { success: 0, nodes: 0, path: 0, time: 0 }
+    };
+    
+    // Store original algorithm
+    const originalAlgorithm = tetrisGame.algorithmType;
+    
+    // Function to test each algorithm
+    const testAlgorithms = async () => {
+        // Test each algorithm in sequence
+        for (const algorithm of ['astar', 'bfs', 'greedy']) {
+            // Switch to this algorithm
+            tetrisGame.algorithmType = algorithm;
+            tetrisGame.lastAlgorithmSwitch = performance.now();
+            
+            // Reset PM elements
+            tetrisGame.programmableMatter.elements.forEach(element => {
+                element.targetX = null;
+                element.targetY = null;
+                element.atTarget = false;
+                element.path = [];
+            });
+            
+            // Reset metrics
+            tetrisGame.metrics.nodesExplored = 0;
+            tetrisGame.metrics.elementsAtTarget = 0;
+            
+            // Update UI to show current algorithm
+            document.querySelectorAll('.algorithm-option[data-algorithm]').forEach(option => {
+                option.classList.toggle('active', option.dataset.algorithm === algorithm);
+            });
+            
+            // Give time for the UI to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Calculate targets and plan paths
+            calculateTargetPositions();
+            planPaths();
+            
+            // Move PM elements to their targets
+            let moveCounter = 0;
+            while (moveCounter < 20) {
+                moveProgrammableMatter();
+                await new Promise(resolve => setTimeout(resolve, 50));
+                moveCounter++;
+            }
+            
+            // Update metrics for this algorithm
+            updateAlgorithmComparison();
+            
+            // Wait before next algorithm
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        // Restore original algorithm
+        tetrisGame.algorithmType = originalAlgorithm;
+        
+        // Update UI to show original algorithm
+        document.querySelectorAll('.algorithm-option[data-algorithm]').forEach(option => {
+            option.classList.toggle('active', option.dataset.algorithm === originalAlgorithm);
+        });
+        
+        // Reset button
+        experimentButton.textContent = 'Run Algorithm Comparison';
+        experimentButton.disabled = false;
+    };
+    
+    // Start the experiment
+    testAlgorithms();
+}
+
+// Add event listener to run experiment button
+document.addEventListener('DOMContentLoaded', function() {
+    const experimentButton = document.getElementById('run-experiment');
+    if (experimentButton) {
+        experimentButton.addEventListener('click', runAlgorithmComparison);
+    }
+});
+</script>
     <script src="/static/script.js"></script>
 </body>
 
